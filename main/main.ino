@@ -4,7 +4,7 @@
  * maple_mini_boot20.bin bootloader 2.0
  * 
  * LCD SSD1283A
- * LED ->  -> Maple mini pin 
+ * LED -> PB6 -> Maple mini pin 16
  * SCK -> PA5 -> Maple mini pin 6
  * SDA -> PA7 -> Maple mini pin 4
  * A0  -> PB7 -> Maple mini pin 15
@@ -14,7 +14,13 @@
  * DHT22
  * Data pin -> PA8 -> Maple mini pin 27
  * 
- * Temperature
+ * Temperature -> PA2 -> Maple mini pin 9 
+ * 
+ * KEY -> PB12 -> Maple mini pin 31
+ * LIGHTS -> PB13 -> Maple mini pin 30
+ * BEEPER -> PB14 -> Maple mini pin 29
+ * RPM -> PA0 -> Maple mini pin 11
+ * BUTTON -> PA15 -> Maple mini pin 20
  */
 
 #include "DHT.h"
@@ -22,6 +28,7 @@
 #include <LCDWIKI_SPI.h> //Hardware-specific library
 #include <EEPROM.h>
 #include <RTClock.h>
+#include <time.h>
 #include <Wire.h>    // for I2C
 
 #define i2caddr 0x50
@@ -33,15 +40,18 @@ TwoWire Wire2 (2,I2C_FAST_MODE);
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-RTClock rt (RTCSEL_LSI); // initialise
+RTClock rtc(RTCSEL_LSI);
+time_t tt;
+tm_t tm, newtm;
+String blinkChar = ":";
 
-
-//LCDWIKI_SPI mylcd(SSD1283A,10,9,8,-1); //Pro Mini
-//LCDWIKI_SPI mylcd(SSD1283A,15,16,4,-1); //ESP8266
-
-LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA1,-1); //Maple mini //hardware spi,cs,cd,reset,led
-//LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA6,PA7,PA1,PA5,-1);//software spi,model,cs,cd,miso,mosi,reset,clk,led
-
+#define LED_PIN PB1
+#define LIGHTS PB13
+#define KEY PB12
+#define BEEPER PB14
+#define RPM PA0
+#define TEMP PA2
+#define BUTTON PA15
 
 #define BLACK   0x0000
 #define BLUE    0x001F
@@ -77,11 +87,46 @@ int16_t rpm;
 String lastTrip;
 String lastOdometr;
 int lastTime;
+int lastSecond;
+int curTemp;
 String lastDate;
+unsigned long uptime;
+unsigned long uptime2;
+unsigned long uptime3;
+unsigned long uptime4;
+unsigned long timeKey;
+bool alarm = 0;
+bool tempAlarm = 0;
+bool invertLCD = 0;
+bool state = 0;
+String curDate;
+String day;
+String month;
+int hour;
+int minute;
+int second;
+
+long buttonTimer = 0;
+long longPressTime = 2000;
+long superLongPressTime = 5000;
+
+boolean buttonActive = false;
+boolean longPressActive = false;
+boolean superLongPressActive = false;
+bool backlidState = 1;
 
 
 float i = -20;
 float g = 0;
+
+
+
+//LCDWIKI_SPI mylcd(SSD1283A,10,9,8,-1); //Pro Mini
+//LCDWIKI_SPI mylcd(SSD1283A,15,16,4,-1); //ESP8266
+
+LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA1,PB6); //Maple mini //hardware spi,cs,cd,reset,led
+//LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA6,PA7,PA1,PA5,-1);//software spi,model,cs,cd,miso,mosi,reset,clk,led
+
 //long EEPROMReadlong(long address) {
 //  long four = EEPROM.read(address);
 //  long three = EEPROM.read(address + 1);
@@ -92,55 +137,131 @@ float g = 0;
 //}
 //unsigned int trip = EEPROMReadlong(EEPROM_TRIP);
 
-
 void setup() 
 {
-  pinMode(PB1, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(KEY, INPUT_PULLDOWN);
+  pinMode(LIGHTS, INPUT_PULLDOWN);
+  pinMode(RPM, INPUT_ANALOG);
+  pinMode(TEMP, INPUT_ANALOG);
+  pinMode(BUTTON , INPUT_PULLUP);
+  pinMode(BEEPER, OUTPUT);
   Serial.begin(9600);
-  delay(1000);
+  delay(500);
   Wire.begin();         // wake up the I2C
   dht.begin();
+  //rtc.attachSecondsInterrupt(blink);// Call blink
+  setTime(2020,01,01,00,00,00);
   mylcd.Init_LCD();
   mylcd.Set_Rotation(1);
   mylcd.Set_Text_Mode(1);
   mylcd.Fill_Screen(WHITE);
-  //animation();
+  animation();
   initTemp();
   //initGear();
+
+  
+  state = true;
 }
 
+void reinit(){
+
+  if(digitalRead(LIGHTS)){
+    if(!state){
+      Serial.println("Ignition");
+      Serial.println("Rest variables");
+      lastOdometr = "";
+      lastTrip = "";
+      curTemp = 0;
+      lastTime = 0;
+      lastDate = "";
+      //Wire.end();         // wake up the I2C
+      //dht.end();
+      Serial.println("Wire restart");
+      Wire.begin();         // wake up the I2C
+      
+      Serial.println("DHT restart");
+      dht.begin();
+
+      Serial.println("LCD restart");
+      mylcd.Init_LCD();
+      mylcd.Set_Rotation(1);
+      mylcd.Set_Text_Mode(1);
+      mylcd.Fill_Screen(WHITE);
+      
+      
+      Serial.println("Welcome to Varadero LCD");
+      animation();
+      Serial.println("Init temp");
+      initTemp();
+      state = true;
+    }
+  }
+  else {
+    state = false;
+    bye();
+    Serial.println("Bye");
+  }
+}
+
+
+
+
 void loop() {
-  digitalWrite(PB1, HIGH);
-  setEngineTemp(i);
+  alarm = keyOn() | tempAlarm;
+  reinit();
+  if(millis() - uptime >=500 && digitalRead(LIGHTS)){
+  //if(millis() - uptime >=500 && digitalRead(KEY)){
+    uptime = millis();
+    blink();
+    rtc.getTime(tm);
+    updateTime();
+    updateDate();
+    setEngineTemp(i);
+    setExternalTemp();
+    setOdometr(readTotalOdometr());
+    setTrip(readTripOdometr());
+    //mylcd.Invert_Display(1);
+    Serial.print("Temp: ");
+    Serial.println(analogRead(TEMP));
+    Serial.print("RPM: ");
+    Serial.println(analogRead(RPM));
+  }
+
+  rpmCount();
+  beep();
+  button();
+  
   i++;
   if (i==120) i=0;
-  setExternalTemp();
-//    setGear(g);
-  setDate("20/09/2019");
-  setTime(20,20,20);
-  setOdometr(readTotalOdometr());
-  setTrip(readTripOdometr());
 //    //EEPROMWritelong(EEPROM_TRIP, trip);
+//    setGear(g);
 //    g++;
-//    
 //    if (g==7) g=0;
-//    //mylcd.Invert_Display(1);
-    delay(100);
-    digitalWrite(PB1, LOW);
-    delay(100);
+
+
+
   }
-  void animation()
-  {
-    mylcd.Set_Text_colour(BLACK);
-    mylcd.Set_Text_Size(3);
-    mylcd.Print_String("HONDA", 20, GEAR_POS_Y+GEAR_SIZE_Y-18);
-    mylcd.Set_Text_Size(2);
-    mylcd.Print_String("VARADERO", 16, GEAR_POS_Y+GEAR_SIZE_Y+14);
-    delay(2000);
-    mylcd.Set_Draw_color(WHITE);
-    mylcd.Fill_Rectangle(2,GEAR_POS_Y+18, 128, 128);
-    
-  }
+void animation()
+{
+  mylcd.Set_Text_colour(BLACK);
+  mylcd.Set_Text_Size(3);
+  mylcd.Print_String("HONDA", 20, GEAR_POS_Y+GEAR_SIZE_Y-18);
+  mylcd.Set_Text_Size(2);
+  mylcd.Print_String("VARADERO", 16, GEAR_POS_Y+GEAR_SIZE_Y+14);
+  delay(2000);
+  mylcd.Set_Draw_color(WHITE);
+  mylcd.Fill_Rectangle(2,GEAR_POS_Y+18, 128, 128);
+}
+void bye()
+{
+  mylcd.Set_Text_colour(BLACK);
+  mylcd.Set_Text_Size(3);
+  mylcd.Print_String("Bye", 20, GEAR_POS_Y+GEAR_SIZE_Y-18);
+  delay(2000);
+  mylcd.Set_Draw_color(WHITE);
+  mylcd.Fill_Rectangle(2,GEAR_POS_Y+18, 128, 128);
+}
   
 void setTrip(String km)
 {
@@ -164,10 +285,10 @@ void setTrip(String km)
   }
 }
   
-  void setOdometr(String km)
-  {
-    if(lastOdometr != km){
-      lastOdometr = km;
+void setOdometr(String km)
+{
+  if(lastOdometr != km){
+    lastOdometr = km;
       
     String kmInt = km.substring(0, km.length() - 3);
     String kmDec = km.substring(km.length()-2, km.length() - 1);
@@ -186,12 +307,16 @@ void setTrip(String km)
     mylcd.Fill_Rectangle(130-(16), odometrPOSY-1, 130-(2), odometrPOSY+15);   
     mylcd.Set_Text_colour(WHITE);     
     mylcd.Print_String(kmDec, 130-14, odometrPOSY);
-    }
-    
-  }
+  }    
+}
   
-  void setDate(String curDate)
-  {
+void updateDate()
+{
+  day = String(tm.day);
+  month = String(tm.month);
+  if(tm.day<10) day = "0"+String(tm.day);
+  if(tm.month<10) month = "0"+String(tm.month);
+  curDate = day + "/" + month + "/" + String(1970+tm.year);
     if(lastDate != curDate){
        lastDate = curDate;
     mylcd.Set_Draw_color(WHITE);
@@ -202,22 +327,34 @@ void setTrip(String km)
     }
   }
   
-  void setTime(int16_t hour, int16_t minute, int16_t second)
-  {
-    if(lastTime != hour+minute+second){
-       lastTime = hour+minute+second;
+void updateTime()
+{
+  hour = tm.hour;
+  minute = tm.minute;
+  second = tm.second;
+
+  if(lastTime != hour+minute){
+    lastTime = hour+minute;        
     mylcd.Set_Draw_color(WHITE);
-    mylcd.Fill_Rectangle(dateTimePOSX, dateTimePOSY+20, dateTimePOSX+98, dateTimePOSY+48);
+    mylcd.Fill_Rectangle(dateTimePOSX, dateTimePOSY+20, dateTimePOSX+43, dateTimePOSY+48);
+    mylcd.Set_Draw_color(WHITE);
+    mylcd.Fill_Rectangle(dateTimePOSX+54, dateTimePOSY+20, dateTimePOSX+98, dateTimePOSY+48);
     mylcd.Set_Text_colour(BLACK);
     mylcd.Set_Text_Size(4);
-    mylcd.Print_String(String(hour), dateTimePOSX, dateTimePOSY+20);
-    mylcd.Print_String(":", dateTimePOSX+40, dateTimePOSY+20);
-    mylcd.Print_String(String(minute), dateTimePOSX+55, dateTimePOSY+20);
-    //mylcd.Print_String(":", dateTimePOSX+52, 34);
-    //mylcd.Print_String(String(second), dateTimePOSX+54, dateTimePOSY+20);
+    if (hour < 10 ){
+      mylcd.Print_String("0"+String(hour), dateTimePOSX, dateTimePOSY+20);
     }
-    
-  }
+    else{
+      mylcd.Print_String(String(hour), dateTimePOSX, dateTimePOSY+20);
+    }
+    if (minute < 10 ){
+    mylcd.Print_String("0"+String(minute), dateTimePOSX+55, dateTimePOSY+20);
+    }
+    else{
+    mylcd.Print_String(String(minute), dateTimePOSX+55, dateTimePOSY+20);
+    }
+  }  
+}
   
   void initGear()
   {
@@ -249,24 +386,27 @@ void setTrip(String km)
     }
   }
   
-  void initTemp()
-  {
-    mylcd.Set_Draw_color(BLACK);
-    mylcd.Draw_Rectangle(2, 2, 128, 20);
-    mylcd.Draw_Rectangle(82, 2, 128, 20);
-  }
+void initTemp()
+{
+  mylcd.Set_Draw_color(BLACK);
+  mylcd.Draw_Rectangle(2, 2, 128, 20);
+  mylcd.Draw_Rectangle(82, 2, 128, 20);
+}
 
-  void setEngineTemp(int16_t curTemp)
-  {
-    if(lastEngineTemp != curTemp){
-      lastEngineTemp = curTemp;
-      //clear screan
+void setEngineTemp(int16_t curTemp)
+{
+  if(lastEngineTemp != curTemp){
+    lastEngineTemp = curTemp;
+    //clear screan
     mylcd.Set_Draw_color(WHITE);
     mylcd.Fill_Rectangle(4, 4, 80, 18);
     if (curTemp > 100){
       mylcd.Set_Draw_color(RED);
+      if(invertLCD) mylcd.Set_Draw_color(BLUE);
+      tempAlarm = 1;
     }
     else{
+      tempAlarm = 0;
       mylcd.Set_Draw_color(BLACK);
     }
     mylcd.Fill_Rectangle(4, 4, map(curTemp,0,120,4,80), 18);
@@ -275,22 +415,21 @@ void setTrip(String km)
     //draw value
     mylcd.Set_Text_Size(1);
     mylcd.Set_Text_colour(BLUE);
+    if(invertLCD) mylcd.Set_Text_colour(MAGENTA);
     short offset = (String(curTemp).length()*6);
     mylcd.Print_String(String(curTemp), engineTempPOSX-offset, engineTempPOSY);
     
     //draw circle
     mylcd.Set_Draw_color(BLUE);
+    if(invertLCD) mylcd.Set_Draw_color(MAGENTA);
     mylcd.Draw_Circle(engineTempPOSX+1,engineTempPOSY,1);
     }
     
-  }
+}
 
   void setExternalTemp()
   {
-  Serial.print("temp: ");
-    int curTemp;
     curTemp = dht.readTemperature();
-    Serial.println(curTemp);
     if(curTemp == lastTemp){
       return;
     }
@@ -360,4 +499,135 @@ byte readData(unsigned int addr)
   Wire.requestFrom(i2caddr,1); // get the byte of data
   result = Wire.read();
   return result;
+}
+
+void blink ()
+{
+  digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  if (blinkChar.equals(String(":"))){
+    blinkChar = "";
+    if(alarm){
+      invertLCD = 0;
+    }
+  }
+  else{
+    blinkChar = ":";
+    if(alarm){
+      invertLCD = 1;
+    }
+  }
+  if(alarm){
+    mylcd.Invert_Display(invertLCD);
+  }
+  else {
+    mylcd.Invert_Display(0);
+  }
+  
+  mylcd.Set_Draw_color(WHITE);
+  mylcd.Set_Text_colour(BLACK);
+  mylcd.Set_Text_Size(4);
+  mylcd.Fill_Rectangle(dateTimePOSX+46, dateTimePOSY+24, dateTimePOSX+50, dateTimePOSY+44);
+  mylcd.Print_String(blinkChar, dateTimePOSX+39, dateTimePOSY+20);
+
+  
+}
+void beep()
+{
+  if(alarm && rpmCount() < 500){
+    if(millis() - uptime2 >=200){
+      uptime2 = millis();
+      digitalWrite(BEEPER, !digitalRead(BEEPER));
+    }
+  }
+  else{
+    digitalWrite(BEEPER, LOW);
+  }
+  
+}
+
+int rpmCount(){
+  return analogRead(RPM);
+
+}
+void button(){
+
+//  if (!digitalRead(BUTTON)) {
+//    if (buttonActive == false) {
+//      buttonTimer = millis();
+//      buttonActive = true;
+//    }
+//  }
+//  else{
+//    if (buttonActive == true) {
+//      if(millis() - buttonTimer < 500){
+//        Serial.println("button -> short");
+//      }
+//      else if(millis() - buttonTimer < 5000 && millis() - buttonTimer > 2000){
+//        Serial.println("button -> long");
+//      }else if(millis() - buttonTimer > 5000){
+//        backlidState = !backlidState;
+//        backlidControl(backlidState);
+//      }
+//      buttonTimer = 0;
+//      buttonActive = false;
+//    }
+//  }
+//
+  if (digitalRead(BUTTON) == LOW) {
+    if (buttonActive == false) {
+      buttonActive = true;
+      buttonTimer = millis();
+    }
+    if ((millis() - buttonTimer > longPressTime) && (longPressActive == false)) {
+      longPressActive = true;
+      Serial.println("button -> long");
+    }
+    if ((millis() - buttonTimer > superLongPressTime) && (superLongPressActive == false)) {
+      superLongPressActive = true;
+      backlidState = !backlidState;
+      backlidControl(backlidState);
+      Serial.println("toggle backlight");
+    }
+  }
+  else{
+    if (buttonActive == true) {
+      if (longPressActive == true) {
+        longPressActive = false;
+      }
+      if (superLongPressActive == true) {
+        superLongPressActive = false;
+      }
+      else {
+        Serial.println("button -> short");
+      }
+      buttonActive = false;
+    }
+  }
+}
+
+void backlidControl( bool i)
+{
+  mylcd.Led_control(i);
+  backlidState = i;
+}
+
+bool keyOn ()
+{
+  if(digitalRead(LIGHTS)){
+    if(millis() - timeKey > 60*1000){
+      return true;
+    }
+    //timeKey = millis();
+  }
+  return false;
+}
+void setTime(int YYYY, byte MM, byte DD, byte hh, byte mm, byte ss)
+{
+  newtm.year = YYYY - 1970;
+  newtm.month = MM;
+  newtm.day = DD;
+  newtm.hour = hh;
+  newtm.minute = mm;
+  newtm.second = ss;
+  rtc.setTime(rtc.makeTime(newtm));
 }
