@@ -76,6 +76,7 @@ String lastOdometr;
 int lastTime;
 int lastSecond;
 int curTemp;
+int curTempEngine;
 String lastDate;
 unsigned long uptime;
 unsigned long uptime2;
@@ -171,11 +172,15 @@ void reinit(){
     if(!state){
       Serial.println("Ignition");
       Serial.println("Rest variables");
+      alarm = keyOn() || tempAlarm;
       lastOdometr = "";
       lastTrip = "";
-      curTemp = 0;
+      curTemp = 999;
       lastTime = 99999;
       lastDate = "";
+      setEngineTemp();
+      setExternalTemp();
+      timeKey = millis();
       //Wire.end();         // wake up the I2C
       Serial.println("Wire restart");
       Wire.begin();         // wake up the I2C
@@ -196,7 +201,7 @@ void reinit(){
   else {
     state = false;
     bye();
-    Serial.println("Bye");
+    //Serial.println("Bye");
   }
 }
 
@@ -204,7 +209,7 @@ void reinit(){
 
 
 void loop() {
-  alarm = keyOn();
+  alarm = keyOn() || tempAlarm;
   reinit();
   if(millis() - uptime >=500 && digitalRead(LIGHTS)){
   //if(millis() - uptime >=500 && digitalRead(KEY)){
@@ -379,13 +384,15 @@ void initTemp()
 
 void setEngineTemp()
 {
-  curTemp = temp.externalTemp(TEMP_ENGINE);
-  if(lastEngineTemp != curTemp){
-    lastEngineTemp = curTemp;
+  if(curTempEngine != 999){
+    curTempEngine = temp.engineTemp(TEMP_ENGINE);
+  }
+  if(lastEngineTemp != curTempEngine){
+    lastEngineTemp = curTempEngine;
     //clear screan
     mylcd.Set_Draw_color(WHITE);
     mylcd.Fill_Rectangle(4, 4, 80, 18);
-    if (curTemp > 114){
+    if (curTempEngine > 114){
       mylcd.Set_Draw_color(RED);
       if(invertLCD) mylcd.Set_Draw_color(BLUE);
       tempAlarm = 1;
@@ -394,15 +401,15 @@ void setEngineTemp()
       tempAlarm = 0;
       mylcd.Set_Draw_color(BLACK);
     }
-    mylcd.Fill_Rectangle(4, 4, map(curTemp,0,125,4,80), 18);
+    mylcd.Fill_Rectangle(4, 4, map(curTempEngine,-10,125,4,80), 18);
 
     
     //draw value
     mylcd.Set_Text_Size(1);
     mylcd.Set_Text_colour(BLUE);
     if(invertLCD) mylcd.Set_Text_colour(MAGENTA);
-    short offset = (String(curTemp).length()*6);
-    mylcd.Print_String(String(curTemp), engineTempPOSX-offset, engineTempPOSY);
+    short offset = (String(curTempEngine).length()*6);
+    mylcd.Print_String(String(curTempEngine), engineTempPOSX-offset, engineTempPOSY);
     
     //draw circle
     mylcd.Set_Draw_color(BLUE);
@@ -414,7 +421,9 @@ void setEngineTemp()
 
   void setExternalTemp()
   {
-    curTemp = temp.externalTemp(TEMP_EXTERNAL);
+    if(curTemp != 999){
+      curTemp = temp.externalTemp(TEMP_EXTERNAL);
+    }
     if(curTemp == lastTemp){
       return;
     }
@@ -560,7 +569,7 @@ void backlidControl( bool i)
 
 bool keyOn ()
 {
-  if(digitalRead(LIGHTS) && rpm.getRPM() < 500){
+  if((digitalRead(LIGHTS) && rpm.getRPM() < 500)){
     if(millis() - timeKey > 60*1000){
       return true;
     }
