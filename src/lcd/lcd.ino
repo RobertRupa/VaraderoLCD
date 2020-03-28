@@ -4,18 +4,18 @@
  * maple_mini_boot20.bin bootloader 2.0
  * 
  * LCD SSD1283A
- * LED -> PB6 -> Maple mini pin 16
+ * LED -> PA9 -> Maple mini pin 26
  * SCK -> PA5 -> Maple mini pin 6
  * SDA -> PA7 -> Maple mini pin 4
- * A0  -> PB7 -> Maple mini pin 15
- * RST -> PA1 -> Maple mini pin 10 
+ * A0  -> PA10 -> Maple mini pin 25
+ * RST -> PB2 -> Maple mini pin 2
  * CS  -> PA4 -> Maple mini pin 7
  * 
- * DHT22
- * Data pin -> PA8 -> Maple mini pin 27
+ * 24c02 i2c SCK -> PB6 -> Maple mini pin 16
+ * 24c02 i2c SDA -> PB7 -> Maple mini pin 15
  * 
- * Temperature -> PA2 -> Maple mini pin 9 
- * 
+ * TEMP_EXTERNAL -> PA2 -> Maple mini pin 9
+ * TEMP_ENGINE -> PA3 -> Maple mini pin 8
  * KEY -> PB12 -> Maple mini pin 31
  * LIGHTS -> PB13 -> Maple mini pin 30
  * BEEPER -> PB14 -> Maple mini pin 29
@@ -23,68 +23,54 @@
  * BUTTON -> PA15 -> Maple mini pin 20
  */
 
-#include "DHT.h"
+#include "colors.h"
+#include "ui_positions.h"
+#include "Temperature.h"
+#include "Rpm.h"
+#include <Wire.h>    // for I2C
+#include "Odometr.h"
 #include <LCDWIKI_GUI.h> //Core graphics library
 #include <LCDWIKI_SPI.h> //Hardware-specific library
 #include <EEPROM.h>
 #include <RTClock.h>
 #include <time.h>
-#include <Wire.h>    // for I2C
-
-#define i2caddr 0x50
-#define STM_I2C2_FREQ 400000
-TwoWire Wire2 (2,I2C_FAST_MODE);
-#define Wire Wire2
-
-#define DHTPIN PA8
-#define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
-
-RTClock rtc(RTCSEL_LSI);
-time_t tt;
-tm_t tm, newtm;
-String blinkChar = ":";
 
 #define LED_PIN PB1
 #define LIGHTS PB13
 #define KEY PB12
 #define BEEPER PB14
 #define RPM PA0
-#define TEMP PA2
+#define TEMP_EXTERNAL PA2
+#define TEMP_ENGINE PA3
 #define BUTTON PA15
 
-#define BLACK   0x0000
-#define BLUE    0x001F
-#define RED     0xF800
-#define GREEN   0x07E0
-#define CYAN    0x07FF
-#define MAGENTA 0xF81F
-#define YELLOW  0xFFE0
-#define WHITE   0xFFFF
-#define EEPROM_TRIP  0
-#define GEAR_POS_X 82
-#define GEAR_POS_Y 22
-#define GEAR_SIZE_X 46
-#define GEAR_SIZE_Y 46
-#define GEAR_SIZE_FONT 5
-#define SHIFT_LIGHT_RPM 6000
 
-int16_t engineTempPOSX = 50;
-int16_t engineTempPOSY = 8;
-int16_t externalTempPOSX = 118;
-int16_t externalTempPOSY = 5;
-int16_t dateTimePOSX = 16;
-int16_t dateTimePOSY = 24;
-int16_t odometrPOSX = 2;
-int16_t odometrPOSY = 78;
-int16_t tripPOSX = 116;
-int16_t tripPOSY = 98;
+Temperature temp;
+Rpm rpm(RPM);
+void countRPM() {
+  return rpm.countRPM();
+}
+void checkRPM() {
+  return rpm.checkRPM();
+}
+
+#define Wire Wire2
+TwoWire Wire2 (1,I2C_FAST_MODE);
+Odometr odo(0x50);
+
+#define STM_I2C2_FREQ 400000
+
+RTClock rtc(RTCSEL_LSI);
+time_t tt;
+tm_t tm, newtm;
+String blinkChar = ":";
+
+
+
 
 int16_t lastEngineTemp;
 int16_t lastTemp;
 int16_t lastGear;
-int16_t rpm;
-int lastRPM;
 String lastTrip;
 String lastOdometr;
 int lastTime;
@@ -125,9 +111,9 @@ volatile int pwm_value = 0;
 volatile int prev_time = 0;
 
 //LCDWIKI_SPI mylcd(SSD1283A,10,9,8,-1); //Pro Mini
-//LCDWIKI_SPI mylcd(SSD1283A,15,16,4,-1); //ESP8266
+//LCDWIKI_SPI mylcd(SSD1283A,18,19,4,-1); //ESP8266
 
-LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA1,PB6); //Maple mini //hardware spi,cs,cd,reset,led
+LCDWIKI_SPI mylcd(SSD1283A,PA4,PA10,PB2,PA9); //Maple mini //hardware spi,cs,cd,reset,led
 //LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA6,PA7,PA1,PA5,-1);//software spi,model,cs,cd,miso,mosi,reset,clk,led
 
 //long EEPROMReadlong(long address) {
@@ -149,15 +135,13 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
   pinMode(KEY, INPUT_PULLDOWN);
   pinMode(LIGHTS, INPUT_PULLDOWN);
-  pinMode(RPM, INPUT_PULLDOWN);
-  pinMode(TEMP, INPUT_ANALOG);
+  pinMode(TEMP_EXTERNAL, INPUT_ANALOG);
+  pinMode(TEMP_ENGINE, INPUT_ANALOG);
   pinMode(BUTTON , INPUT_PULLUP);
   pinMode(BEEPER, OUTPUT);
   
   Serial.println("I2C start");
   Wire.begin();         // wake up the I2C
-  Serial.println("DHT start");
-  dht.begin();
   Serial.println("LCD start");
   mylcd.Init_LCD();
   mylcd.Set_Rotation(1);
@@ -173,17 +157,18 @@ void setup()
   //initGear();
   
   Serial.println("Interrupts start");
-  attachInterrupt(RPM, rising, FALLING);
   rtc.attachSecondsInterrupt(countRPM);
+  attachInterrupt(RPM, checkRPM, FALLING);
   
   state = true;
+  
+  Serial.println("Setup done.");
 }
 
 void reinit(){
 
   if(digitalRead(LIGHTS)){
     if(!state){
-  Serial.print("Test");
       Serial.println("Ignition");
       Serial.println("Rest variables");
       lastOdometr = "";
@@ -192,12 +177,8 @@ void reinit(){
       lastTime = 99999;
       lastDate = "";
       //Wire.end();         // wake up the I2C
-      //dht.end();
       Serial.println("Wire restart");
       Wire.begin();         // wake up the I2C
-      
-      Serial.println("DHT restart");
-      dht.begin();
 
       Serial.println("LCD restart");
       mylcd.Init_LCD();
@@ -232,19 +213,12 @@ void loop() {
     rtc.getTime(tm);
     updateTime();
     updateDate();
-    setEngineTemp(i);
+    setEngineTemp();
     setExternalTemp();
-    setOdometr(readTotalOdometr());
-    setTrip(readTripOdometr());
+    setOdometr(odo.readTotalOdometr());
+    setTrip(odo.readTripOdometr());
     //mylcd.Invert_Display(1);
-    Serial.print("Temp: ");
-    Serial.println(analogRead(TEMP));
-    Serial.print("RPM: ");
-    Serial.println(lastRPM*60);
-  i+=5;
-  if (i==120) i=0;
   }
-  rpmCount();
   beep();
   button();
   
@@ -366,35 +340,35 @@ void updateTime()
   }  
 }
   
-  void initGear()
-  {
-    mylcd.Set_Draw_color(BLACK);
-    mylcd.Draw_Rectangle(GEAR_POS_X, GEAR_POS_Y, GEAR_POS_X+GEAR_SIZE_X, GEAR_POS_Y+GEAR_SIZE_Y);
-  }
-  
-  void setGear(int16_t gear)
-  {
-    if(lastGear != gear){
-      lastGear = gear;
-      if(rpm>SHIFT_LIGHT_RPM){
-        mylcd.Set_Draw_color(RED);
-      }
-      else{
-        mylcd.Set_Draw_color(WHITE);
-      }
-      mylcd.Fill_Rectangle(GEAR_POS_X+1, GEAR_POS_Y+1, GEAR_POS_X+GEAR_SIZE_X-1, GEAR_POS_Y+GEAR_SIZE_Y-1);
-      mylcd.Set_Text_colour(BLACK);
-      //mylcd.Set_Text_Size(1);
-      //mylcd.Print_String("GEAR", 95, 22);
-      mylcd.Set_Text_Size(GEAR_SIZE_FONT);
-      if(gear==0){
-        mylcd.Print_String("N", GEAR_POS_X+12, GEAR_POS_Y+6);
-      }
-      else {
-        mylcd.Print_String(String(gear), GEAR_POS_X+12, GEAR_POS_Y+6);
-      } 
-    }
-  }
+//  void initGear()
+//  {
+//    mylcd.Set_Draw_color(BLACK);
+//    mylcd.Draw_Rectangle(GEAR_POS_X, GEAR_POS_Y, GEAR_POS_X+GEAR_SIZE_X, GEAR_POS_Y+GEAR_SIZE_Y);
+//  }
+//  
+//  void setGear(int16_t gear)
+//  {
+//    if(lastGear != gear){
+//      lastGear = gear;
+//      if(rpm>SHIFT_LIGHT_RPM){
+//        mylcd.Set_Draw_color(RED);
+//      }
+//      else{
+//        mylcd.Set_Draw_color(WHITE);
+//      }
+//      mylcd.Fill_Rectangle(GEAR_POS_X+1, GEAR_POS_Y+1, GEAR_POS_X+GEAR_SIZE_X-1, GEAR_POS_Y+GEAR_SIZE_Y-1);
+//      mylcd.Set_Text_colour(BLACK);
+//      //mylcd.Set_Text_Size(1);
+//      //mylcd.Print_String("GEAR", 95, 22);
+//      mylcd.Set_Text_Size(GEAR_SIZE_FONT);
+//      if(gear==0){
+//        mylcd.Print_String("N", GEAR_POS_X+12, GEAR_POS_Y+6);
+//      }
+//      else {
+//        mylcd.Print_String(String(gear), GEAR_POS_X+12, GEAR_POS_Y+6);
+//      } 
+//    }
+//  }
   
 void initTemp()
 {
@@ -403,14 +377,15 @@ void initTemp()
   mylcd.Draw_Rectangle(82, 2, 128, 20);
 }
 
-void setEngineTemp(int16_t curTemp)
+void setEngineTemp()
 {
+  curTemp = temp.externalTemp(TEMP_ENGINE);
   if(lastEngineTemp != curTemp){
     lastEngineTemp = curTemp;
     //clear screan
     mylcd.Set_Draw_color(WHITE);
     mylcd.Fill_Rectangle(4, 4, 80, 18);
-    if (curTemp > 100){
+    if (curTemp > 114){
       mylcd.Set_Draw_color(RED);
       if(invertLCD) mylcd.Set_Draw_color(BLUE);
       tempAlarm = 1;
@@ -419,7 +394,7 @@ void setEngineTemp(int16_t curTemp)
       tempAlarm = 0;
       mylcd.Set_Draw_color(BLACK);
     }
-    mylcd.Fill_Rectangle(4, 4, map(curTemp,0,120,4,80), 18);
+    mylcd.Fill_Rectangle(4, 4, map(curTemp,0,125,4,80), 18);
 
     
     //draw value
@@ -439,7 +414,7 @@ void setEngineTemp(int16_t curTemp)
 
   void setExternalTemp()
   {
-    curTemp = dht.readTemperature();
+    curTemp = temp.externalTemp(TEMP_EXTERNAL);
     if(curTemp == lastTemp){
       return;
     }
@@ -474,42 +449,8 @@ void EEPROMWritelong(int address, long value) {
   EEPROM.write(address + 3, one);
 }
 
-String readTotalOdometr()
-{
-  int addr;
-  char tmp;
-  String result = "";
-  for(addr = 0x70; addr<0x78; addr++){
-    tmp = readData(addr);
-    result+= String(&tmp);
-  }
-  return result;
-}
-String readTripOdometr()
-{
-  int addr;
-  char tmp;
-  String result = "";
-  for(addr = 0x78; addr<0x7D; addr++){
-    tmp = readData(addr);
-    result+= String(&tmp);
-  }
-  return result;
-}
 
-// reads a byte of data from i2c memory location addr
-byte readData(unsigned int addr)
-{
-  byte result;
-  Wire.beginTransmission(i2caddr);
-  // set the pointer position
-  //Wire.write((int)(addr >> 8));
-  Wire.write((int)(addr & 0xFF));
-  Wire.endTransmission(1);
-  Wire.requestFrom(i2caddr,1); // get the byte of data
-  result = Wire.read();
-  return result;
-}
+
 
 void blink ()
 {
@@ -555,13 +496,6 @@ void beep()
   
 }
 
-int rpmCount(){
-  //return digitalRead(RPM);
-  //return pwm_value;
-  return lastRPM*60;
-  //return pulseIn(RPM, HIGH);
-
-}
 void button(){
 
 //  if (!digitalRead(BUTTON)) {
@@ -626,13 +560,13 @@ void backlidControl( bool i)
 
 bool keyOn ()
 {
-  if(digitalRead(LIGHTS) && rpmCount() < 500){
+  if(digitalRead(LIGHTS) && rpm.getRPM() < 500){
     if(millis() - timeKey > 60*1000){
       return true;
     }
     //timeKey = millis();
   }
-  if(rpmCount() > 500){
+  if(rpm.getRPM() > 500){
     timeKey = millis();
   }
   return false;
@@ -645,37 +579,5 @@ void setTime(int YYYY, byte MM, byte DD, byte hh, byte mm, byte ss)
   newtm.hour = hh;
   newtm.minute = mm;
   newtm.second = ss;
-  Serial.println("Time start2");
   rtc.setTime(rtc.makeTime(newtm));
-  Serial.println("Time start3");
-}
-
-void rising() {
-
-  static unsigned long last_interrupt_time = 0;
- unsigned long interrupt_time = millis();
- // If interrupts come faster than 200ms, assume it's a bounce and ignore
- if (interrupt_time - last_interrupt_time > 2)
- {
-   rpm++; 
- }
- last_interrupt_time = interrupt_time;
- 
-  //attachInterrupt(RPM, falling, FALLING);
-  //prev_time = micros();
-//  if(micros()-prev_time > 100){
-//    prev_time = micros();
-//    
-//  }
-}
- 
-//void falling() {
-//  attachInterrupt(RPM, rising, RISING);
-//  pwm_value = micros()-prev_time;
-//  //Serial.println(pwm_value);
-//}
-
-void countRPM(){
-  lastRPM = rpm;
-  rpm=0;
 }
