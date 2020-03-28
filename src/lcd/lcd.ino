@@ -14,6 +14,7 @@
  * 24c02 i2c SCK -> PB6 -> Maple mini pin 16
  * 24c02 i2c SDA -> PB7 -> Maple mini pin 15
  * 
+ * VOLTS -> PA1 -> Maple mini pin 10
  * TEMP_EXTERNAL -> PA2 -> Maple mini pin 9
  * TEMP_ENGINE -> PA3 -> Maple mini pin 8
  * KEY -> PB12 -> Maple mini pin 31
@@ -35,6 +36,7 @@
 #include <RTClock.h>
 #include <time.h>
 
+#define VOLTS PA1
 #define LED_PIN PB1
 #define LIGHTS PB13
 #define KEY PB12
@@ -44,6 +46,12 @@
 #define TEMP_ENGINE PA3
 #define BUTTON PA15
 
+
+
+//enabled features
+#define VOLTMETER
+//#define DATA
+//#define GEARS
 
 Temperature temp;
 Rpm rpm(RPM);
@@ -73,6 +81,8 @@ int16_t lastTemp;
 int16_t lastGear;
 String lastTrip;
 String lastOdometr;
+float lastVolts;
+float voltage;
 int lastTime;
 int lastSecond;
 int curTemp;
@@ -117,15 +127,6 @@ volatile int prev_time = 0;
 LCDWIKI_SPI mylcd(SSD1283A,PA4,PA10,PB2,PA9); //Maple mini //hardware spi,cs,cd,reset,led
 //LCDWIKI_SPI mylcd(SSD1283A,PA4,PB7,PA6,PA7,PA1,PA5,-1);//software spi,model,cs,cd,miso,mosi,reset,clk,led
 
-//long EEPROMReadlong(long address) {
-//  long four = EEPROM.read(address);
-//  long three = EEPROM.read(address + 1);
-//  long two = EEPROM.read(address + 2);
-//  long one = EEPROM.read(address + 3);
-// 
-//  return ((four << 0) & 0xFF) + ((three << 8) & 0xFFFF) + ((two << 16) & 0xFFFFFF) + ((one << 24) & 0xFFFFFFFF);
-//}
-//unsigned int trip = EEPROMReadlong(EEPROM_TRIP);
 
 void setup() 
 {
@@ -138,6 +139,7 @@ void setup()
   pinMode(LIGHTS, INPUT_PULLDOWN);
   pinMode(TEMP_EXTERNAL, INPUT_ANALOG);
   pinMode(TEMP_ENGINE, INPUT_ANALOG);
+  pinMode(VOLTS, INPUT_ANALOG);
   pinMode(BUTTON , INPUT_PULLUP);
   pinMode(BEEPER, OUTPUT);
   
@@ -154,7 +156,7 @@ void setup()
   lastTime = 99;
   //setTime(2020,01,01,00,00,00);
   updateTime();
-  updateDate();
+  //updateDate();
   //initGear();
   
   Serial.println("Interrupts start");
@@ -217,7 +219,15 @@ void loop() {
     blink();
     rtc.getTime(tm);
     updateTime();
-    updateDate();
+    #ifdef DATA
+      //updateDate();
+    #endif 
+    #ifdef VOLTMETER
+      updateVlots();
+    #endif 
+    #ifdef GEARS
+      setGear(g);
+    #endif 
     setEngineTemp();
     setExternalTemp();
     setOdometr(odo.readTotalOdometr());
@@ -227,8 +237,7 @@ void loop() {
   beep();
   button();
   
-//    //EEPROMWritelong(EEPROM_TRIP, trip);
-//    setGear(g);
+//    //EEPROMWritelong(EEPROM_TRIP, trip);\
 //    g++;
 //    if (g==7) g=0;
   }
@@ -443,7 +452,33 @@ void setEngineTemp()
     mylcd.Set_Draw_color(BLACK);
     mylcd.Draw_Circle(externalTempPOSX+1,externalTempPOSY+2,2);
   }
-
+  
+void updateVlots()
+{
+  char outstr[5];
+  voltage = ((analogRead(VOLTS) * 20.0) / 4095.0);
+  voltage = round(voltage*10)/10.0;
+  dtostrf(voltage,7, 1, outstr);
+  
+  Serial.print("; ");
+  Serial.println(voltage);
+  if(lastVolts != voltage){
+    lastVolts = voltage;
+    mylcd.Set_Draw_color(WHITE);
+    short offset = ( String(outstr).length()*12);
+    mylcd.Fill_Rectangle(voltsPOSX-offset, voltsPOSY, voltsPOSX, voltsPOSY+13);
+    
+    //draw value
+    mylcd.Set_Text_Size(2);
+    mylcd.Set_Text_colour(BLACK);
+    mylcd.Set_Text_Back_colour(WHITE);
+    mylcd.Print_String( String(outstr), voltsPOSX-offset, voltsPOSY);
+    
+    //draw circle
+    mylcd.Set_Draw_color(BLACK);
+    mylcd.Print_String("V", voltsPOSX+1,voltsPOSY);
+  }
+}
 
 
 void EEPROMWritelong(int address, long value) {
@@ -459,6 +494,15 @@ void EEPROMWritelong(int address, long value) {
 }
 
 
+//long EEPROMReadlong(long address) {
+//  long four = EEPROM.read(address);
+//  long three = EEPROM.read(address + 1);
+//  long two = EEPROM.read(address + 2);
+//  long one = EEPROM.read(address + 3);
+// 
+//  return ((four << 0) & 0xFF) + ((three << 8) & 0xFFFF) + ((two << 16) & 0xFFFFFF) + ((one << 24) & 0xFFFFFFFF);
+//}
+//unsigned int trip = EEPROMReadlong(EEPROM_TRIP);
 
 
 void blink ()
